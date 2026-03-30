@@ -1,0 +1,102 @@
+# ============================================================================
+# requirements.txt — Oxbuild Compliance Agent
+# ============================================================================
+# Complete Python dependency manifest for the cloud orchestrator and
+# local bridge components.
+#
+# Install:
+#   pip install -r requirements.txt
+#
+# Production (no dev tools):
+#   pip install -r requirements.txt --only-binary :all:
+#
+# Version pinning strategy:
+#   • MAJOR.MINOR pinned with ~= (compatible release) for libraries
+#     where API stability is well-established.
+#   • Exact pins (==) for security-sensitive packages.
+#   • Loose ranges only for developer tooling.
+#
+# Sections:
+#   1. Web Framework
+#   2. Data Validation
+#   3. HTTP Clients
+#   4. C++ Bridge
+#   5. Database
+#   6. LLM / AI
+#   7. Security & Crypto
+#   8. Observability
+#   9. Utilities
+#   10. Development & Testing (optional — use requirements-dev.txt ideally)
+# ============================================================================
+
+
+# ── 1. Web Framework ──────────────────────────────────────────────────────────
+fastapi~=0.111.0           # Async web framework; OpenAPI + Swagger built-in
+uvicorn[standard]~=0.30.0  # ASGI server; [standard] adds uvloop + httptools
+starlette~=0.37.0          # FastAPI's ASGI backbone (pinned for compat)
+
+
+# ── 2. Data Validation ────────────────────────────────────────────────────────
+pydantic~=2.8.0            # Data models, validation, serialisation (v2 API)
+pydantic-settings~=2.3.0   # .env + environment variable loading for Settings
+
+
+# ── 3. HTTP Clients ───────────────────────────────────────────────────────────
+httpx~=0.27.0              # Async HTTP client; used by OxloClient
+httpcore~=1.0.0            # httpx transport layer (transitive, pinned)
+anyio~=4.4.0               # Async concurrency primitives (httpx + fastapi)
+h11~=0.14.0                # HTTP/1.1 protocol layer
+
+
+# ── 4. C++ Bridge (pybind11) ─────────────────────────────────────────────────
+pybind11~=2.13.0           # C++↔Python binding generator for scanner.cpp
+                            # Runtime header package; the .so is built by CMake
+
+
+# ── 5. Database (StateManager) ───────────────────────────────────────────────
+# StateManager uses stdlib sqlite3 — no additional runtime package needed.
+# Optional: aiosqlite for async SQLite access in future async StateManager.
+aiosqlite~=0.20.0          # Async SQLite wrapper (optional / future use)
+
+
+# ── 6. LLM / AI Gateway ──────────────────────────────────────────────────────
+openai~=1.37.0             # OpenAI SDK — used for GPT-4o calls via Oxlo
+                            # Oxlo is OpenAI-API-compatible, so this SDK works.
+tiktoken~=0.7.0            # Token counting for prompt budget management
+
+
+# ── 7. Security & Crypto ─────────────────────────────────────────────────────
+cryptography==42.0.8       # Exact pin — HMAC, AES for vault encryption layer
+python-jose[cryptography]~=3.3.0  # JWT token signing for internal auth
+passlib[bcrypt]~=1.7.4     # Password hashing utilities (future admin auth)
+
+
+# ── 8. Observability ─────────────────────────────────────────────────────────
+structlog~=24.2.0          # Structured logging with context binding
+python-json-logger~=2.0.7  # JSON log formatter for log aggregators
+sentry-sdk[fastapi]~=2.10.0# Error tracking + performance monitoring (optional)
+
+
+# ── 9. Utilities ─────────────────────────────────────────────────────────────
+python-dotenv~=1.0.1       # .env file loading (also used by pydantic-settings)
+python-multipart~=0.0.9    # Multipart form parsing (FastAPI file uploads)
+orjson~=3.10.0             # Fast JSON serialiser (drop-in for stdlib json)
+rich~=13.7.1               # Terminal output formatting for CLI tools
+typer~=0.12.3              # CLI framework for management scripts
+click~=8.1.7               # typer dependency
+
+
+# ── 10. Development & Testing ────────────────────────────────────────────────
+# Tip: move these to requirements-dev.txt and use:
+#   pip install -r requirements-dev.txt
+#
+pytest~=8.2.0              # Test runner
+pytest-asyncio~=0.23.0     # Async test support
+pytest-cov~=5.0.0          # Coverage reporting
+pytest-mock~=3.14.0        # Mock utilities
+httpx                      # Also used in tests as async test client (already listed)
+respx~=0.21.0              # httpx request mocking for unit tests
+black~=24.4.0              # Code formatter
+ruff~=0.5.0                # Fast linter (replaces flake8 + isort + more)
+mypy~=1.10.0               # Static type checker
+pre-commit~=3.7.0          # Git pre-commit hook runner

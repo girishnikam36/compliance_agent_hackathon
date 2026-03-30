@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Oxbuild Compliance Agent — Local-first GDPR/DPDPA code auditor" />
+    <meta name="theme-color" content="#09090b" />
+
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%2309090b'/><polygon points='16,4 28,10 28,22 16,28 4,22 4,10' fill='none' stroke='%234ade80' stroke-width='2'/><text x='16' y='21' font-size='12' text-anchor='middle' fill='%234ade80' font-family='monospace' font-weight='bold'>OX</text></svg>"
+    />
+
+    <title>Oxbuild Compliance Agent</title>
+
+    <!--
+      Google Fonts: Geist Mono (terminal UI) + Geist (sans fallback)
+      These are also imported in index.css via @import — the link tag
+      here is kept as a preconnect hint for faster loading in dev.
+    -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600;700;800&family=Geist:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+
+    <!--
+      TAILWIND CSS — Built via PostCSS (NOT CDN)
+      ============================================
+      The previous CDN approach (cdn.tailwindcss.com + tailwind.config = {...})
+      was breaking in Electron because:
+        1. Electron's renderer has no guaranteed internet access
+        2. `tailwind` global is undefined when the CDN script fails to load
+        3. The inline `tailwind.config = {...}` block then throws:
+           "Uncaught ReferenceError: tailwind is not defined"
+
+      The correct approach for a Vite + Electron project:
+        - tailwind, postcss, autoprefixer are already in devDependencies
+        - postcss.config.js tells Vite/PostCSS to run Tailwind at build time
+        - @tailwind directives in index.css are processed by PostCSS
+        - Vite injects the resulting CSS as a regular <style> or <link> tag
+        - No CDN, no network dependency, works fully offline in Electron
+    -->
+
+    <!--
+      Prevent white flash before React mounts.
+      Vite will inject the compiled CSS link tag here automatically.
+    -->
+    <style>
+      html { background-color: #09090b; }
+      body { background-color: #09090b; margin: 0; }
+    </style>
+  </head>
+
+  <body class="bg-zinc-950 text-zinc-100 antialiased">
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

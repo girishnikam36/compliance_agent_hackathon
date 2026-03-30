@@ -1,0 +1,45 @@
+{
+  "name": "oxbuild-compliance-ui",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Oxbuild Compliance Agent — Terminal-inspired React dashboard",
+  "type": "module",
+  "main": "electron/main.cjs",
+
+  "scripts": {
+    "dev":       "vite",
+    "build":     "vite build",
+    "preview":   "vite preview",
+    "app:dev":   "concurrently --kill-others \"npm run dev\" \"wait-on http://localhost:5173 && electron .\"",
+    "app:build": "npm run build && electron-builder",
+    "app:preview": "npm run build && electron ."
+  },
+
+  "dependencies": {
+    "react":        "^18.3.1",
+    "react-dom":    "^18.3.1",
+    "lucide-react": "^0.400.0"
+  },
+
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite":                 "^5.3.4",
+    "autoprefixer":         "^10.4.19",
+    "postcss":              "^8.4.40",
+    "electron":             "^31.3.1",
+    "electron-builder":     "^24.13.3",
+    "concurrently":         "^8.2.2",
+    "wait-on":              "^7.2.0"
+  },
+
+  "build": {
+    "appId":       "ai.oxbuild.compliance-agent",
+    "productName": "Oxbuild Compliance Agent",
+    "asar":        true,
+    "directories": { "output": "release" },
+    "files": ["dist/**/*", "electron/**/*", "!**/node_modules/**"],
+    "mac":   { "category": "public.app-category.developer-tools", "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }] },
+    "win":   { "target": [{ "target": "nsis", "arch": ["x64"] }] },
+    "linux": { "target": [{ "target": "AppImage", "arch": ["x64"] }] }
+  }
+}
