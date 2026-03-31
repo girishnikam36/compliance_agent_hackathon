@@ -1,21 +1,21 @@
 """
-main.py — Oxbuild Compliance Agent | Cloud Orchestrator
-========================================================
-FastAPI application that orchestrates Phases 1-3 of the compliance pipeline.
+cloud_orchestrator/main.py
+===========================
+FastAPI application — Oxbuild Compliance Agent cloud orchestrator.
 
 Endpoints
 ---------
-POST /api/v1/audit          Full pipeline: audit + risk + patch
-POST /api/v1/audit/report   Phase 1 only  (legal violations)
-POST /api/v1/audit/risk     Phase 2 only  (risk score + fines)
-POST /api/v1/audit/patch    Phase 3 only  (refactored code)
-GET  /api/v1/health         Service health check
-GET  /api/v1/models         Configured model info
+POST /api/v1/audit          Full pipeline (Phases 1-2-3)
+POST /api/v1/audit/report   Phase 1 only — legal violations
+POST /api/v1/audit/risk     Phases 1+2 — violations + risk score
+POST /api/v1/audit/patch    Phases 1+3 — violations + patched code
+GET  /api/v1/health         Health check
+GET  /api/v1/models         Currently configured provider/model info
 
 Run
 ---
-    pip install fastapi uvicorn pydantic
-    uvicorn cloud_orchestrator.main:app --host 0.0.0.0 --port 8000 --reload
+    cd cloud_orchestrator
+    uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 """
 
 from __future__ import annotations
@@ -41,9 +41,6 @@ from agents.pipeline import (
     run_risk,
 )
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
@@ -51,77 +48,84 @@ logging.basicConfig(
 )
 logger: logging.Logger = logging.getLogger("oxbuild.api")
 
-# ---------------------------------------------------------------------------
-# Application lifecycle
-# ---------------------------------------------------------------------------
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Lifespan — startup / shutdown
+# ─────────────────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    logger.info("Oxbuild Compliance Agent — cloud orchestrator starting…")
+    logger.info("Oxbuild Compliance Agent — starting up")
+    try:
+        from cloud_orchestrator.core.config import settings
+        logger.info("Provider config loaded:")
+        logger.info("  Auditor   → %s (%s)", settings.auditor_model, settings.auditor_base_url)
+        logger.info("  Judge     → %s (%s)", settings.judge_model, settings.judge_base_url)
+        logger.info("  Architect → %s (%s)", settings.architect_model, settings.architect_base_url)
+        logger.info("  Mock mode → %s", settings.enable_mock_llm)
+    except Exception as e:
+        logger.warning("Could not load config for startup log: %s", e)
     yield
-    logger.info("Oxbuild Compliance Agent — shutting down.")
+    logger.info("Oxbuild Compliance Agent — shutting down")
 
-# ---------------------------------------------------------------------------
-# FastAPI application
-# ---------------------------------------------------------------------------
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FastAPI app
+# ─────────────────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="Oxbuild Compliance Agent",
-    version="1.0.0",
+    version="2.0.0",
     description=(
-        "Cloud orchestrator for legal compliance auditing, "
-        "risk scoring, and automated code patching via LLM agents."
+        "Local-first compliance auditing pipeline. "
+        "Phase 1: Groq/Llama 3.3 70B — violation detection. "
+        "Phase 2: OpenRouter/DeepSeek R1 — risk scoring. "
+        "Phase 3: DeepSeek — compliant code patching."
     ),
-    contact={"name": "Oxbuild Engineering", "email": "eng@oxbuild.ai"},
-    license_info={"name": "Proprietary"},
     lifespan=lifespan,
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
 )
 
-# ---------------------------------------------------------------------------
-# CORS
-# ---------------------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",     # React dev server (Vite)
-        "http://localhost:5173",     # Vite default
-        "http://localhost:8000",     # same-origin
-        "https://app.oxbuild.ai",    # production frontend
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:4173",
+        "http://localhost:8000",
+        "https://app.oxbuild.ai",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------------------------------------------------------------------------
-# Request / Response schemas
-# ---------------------------------------------------------------------------
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Request / Response models
+# ─────────────────────────────────────────────────────────────────────────────
 
 class AuditRequest(BaseModel):
-    """Input payload for any audit endpoint."""
     sanitized_code: str = Field(
         ...,
         min_length=1,
         max_length=500_000,
-        description="Pre-sanitized source code (PII already redacted).",
-        examples=["def get_user(id): return db.query(User).filter_by(id=id).first()"],
+        description="Source code with PII already redacted by the local C++ scanner.",
+        examples=["def get_user(id):\n    return db.query(User).all()"],
     )
     language: str = Field(
         default="python",
-        description="Programming language hint for the LLM auditors.",
-        examples=["python", "javascript", "java", "go"],
+        description="Source language — python, javascript, typescript, java, go, etc.",
     )
     regulations: list[str] = Field(
         default_factory=lambda: ["GDPR", "DPDPA"],
         description="Regulatory frameworks to audit against.",
-        examples=[["GDPR", "DPDPA", "CCPA", "HIPAA"]],
     )
     metadata: dict[str, Any] = Field(
         default_factory=dict,
-        description="Optional caller-supplied metadata (e.g. file path, repo URL).",
+        description="Optional caller metadata (repo, file path, commit SHA, etc.).",
     )
 
     @field_validator("language")
@@ -142,52 +146,33 @@ class AuditRequest(BaseModel):
 
 
 class FullPipelineResponse(BaseModel):
-    """Combined response for the full Phase 1-2-3 pipeline."""
-    request_id:     str
-    elapsed_ms:     float
-    audit_report:   AuditReport
+    request_id:      str
+    elapsed_ms:      float
+    audit_report:    AuditReport
     risk_assessment: RiskAssessment
-    patch_result:   PatchResult
+    patch_result:    PatchResult
 
 
 class HealthResponse(BaseModel):
-    status:  str = "ok"
-    version: str = "1.0.0"
-    uptime_s: float
+    status:   str   = "ok"
+    version:  str   = "2.0.0"
+    uptime_s: float = 0.0
 
 
 class ModelInfo(BaseModel):
-    phase:   int
-    name:    str
-    role:    str
+    phase:    int
+    name:     str
+    role:     str
     provider: str
+    base_url: str
 
 
-# ---------------------------------------------------------------------------
-# Global start time (for uptime)
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Middleware — request ID + timing
+# ─────────────────────────────────────────────────────────────────────────────
+
 _START_TIME: float = time.monotonic()
 
-# ---------------------------------------------------------------------------
-# Exception handler
-# ---------------------------------------------------------------------------
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    req_id = getattr(request.state, "request_id", "unknown")
-    logger.exception("Unhandled error on %s %s [req=%s]",
-                     request.method, request.url.path, req_id)
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={
-            "detail": "Internal server error — check orchestrator logs.",
-            "request_id": req_id,
-        },
-    )
-
-# ---------------------------------------------------------------------------
-# Middleware — request ID injection
-# ---------------------------------------------------------------------------
 
 @app.middleware("http")
 async def attach_request_id(request: Request, call_next):
@@ -195,115 +180,117 @@ async def attach_request_id(request: Request, call_next):
     request.state.request_id = request_id
     t0 = time.perf_counter()
     response = await call_next(request)
-    elapsed = (time.perf_counter() - t0) * 1_000
-    response.headers["X-Request-ID"]   = request_id
+    elapsed  = (time.perf_counter() - t0) * 1_000
+    response.headers["X-Request-ID"]    = request_id
     response.headers["X-Response-Time"] = f"{elapsed:.2f}ms"
     logger.info(
-        "%s %s → %d  [%.2fms] [req=%s]",
+        "%s %s → %d [%.2fms] [req=%s]",
         request.method, request.url.path,
         response.status_code, elapsed, request_id,
     )
     return response
 
-# ---------------------------------------------------------------------------
-# Routes — health & meta
-# ---------------------------------------------------------------------------
 
-@app.get(
-    "/api/v1/health",
-    response_model=HealthResponse,
-    tags=["Meta"],
-    summary="Service health check",
-)
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    req_id = getattr(request.state, "request_id", "unknown")
+    logger.exception("Unhandled error [req=%s]: %s", req_id, exc)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": str(exc), "request_id": req_id},
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Routes — health & meta
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/health", response_model=HealthResponse, tags=["Meta"])
 async def health_check() -> HealthResponse:
     return HealthResponse(
         status="ok",
-        version="1.0.0",
+        version="2.0.0",
         uptime_s=round(time.monotonic() - _START_TIME, 2),
     )
 
 
-@app.get(
-    "/api/v1/models",
-    response_model=list[ModelInfo],
-    tags=["Meta"],
-    summary="Configured LLM model info",
-)
+@app.get("/api/v1/models", response_model=list[ModelInfo], tags=["Meta"])
 async def list_models() -> list[ModelInfo]:
-    return [
-        ModelInfo(
-            phase=1,
-            name="meta-llama/llama-3.3-70b-instruct",
-            role="Legal Auditor — GDPR/DPDPA violation detection",
-            provider="Oxlo (via Groq)",
-        ),
-        ModelInfo(
-            phase=2,
-            name="gpt-4o",
-            role="Risk Judge — Fine prediction & risk scoring",
-            provider="Oxlo (via OpenAI)",
-        ),
-        ModelInfo(
-            phase=3,
-            name="deepseek-ai/DeepSeek-Coder-V2-Instruct",
-            role="Code Architect — Compliant patch generation",
-            provider="Oxlo (via DeepSeek API)",
-        ),
-    ]
+    """Return the currently configured provider and model for each phase."""
+    try:
+        from cloud_orchestrator.core.config import settings
+        return [
+            ModelInfo(
+                phase=1, name=settings.auditor_model,
+                role="Legal Auditor — GDPR/DPDPA violation detection",
+                provider="Groq (free tier)" if "groq" in settings.auditor_base_url else settings.auditor_base_url,
+                base_url=settings.auditor_base_url,
+            ),
+            ModelInfo(
+                phase=2, name=settings.judge_model,
+                role="Risk Judge — Σ(Severity×Likelihood) scoring + fine prediction",
+                provider="OpenRouter (free)" if "openrouter" in settings.judge_base_url else settings.judge_base_url,
+                base_url=settings.judge_base_url,
+            ),
+            ModelInfo(
+                phase=3, name=settings.architect_model,
+                role="Code Architect — Compliant patch generation",
+                provider="DeepSeek (5M free tokens)" if "deepseek.com" in settings.architect_base_url else settings.architect_base_url,
+                base_url=settings.architect_base_url,
+            ),
+        ]
+    except Exception:
+        import os
+        return [
+            ModelInfo(phase=1, name=os.environ.get("AUDITOR_MODEL","llama-3.3-70b-versatile"),
+                      role="Legal Auditor", provider="Groq", base_url=os.environ.get("AUDITOR_BASE_URL","")),
+            ModelInfo(phase=2, name=os.environ.get("JUDGE_MODEL","deepseek/deepseek-r1-0528:free"),
+                      role="Risk Judge", provider="OpenRouter", base_url=os.environ.get("JUDGE_BASE_URL","")),
+            ModelInfo(phase=3, name=os.environ.get("ARCHITECT_MODEL","deepseek-chat"),
+                      role="Code Architect", provider="DeepSeek", base_url=os.environ.get("ARCHITECT_BASE_URL","")),
+        ]
 
-# ---------------------------------------------------------------------------
-# Routes — audit pipeline
-# ---------------------------------------------------------------------------
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Routes — pipeline
+# ─────────────────────────────────────────────────────────────────────────────
 
 @app.post(
     "/api/v1/audit",
     response_model=FullPipelineResponse,
-    status_code=status.HTTP_200_OK,
     tags=["Pipeline"],
-    summary="Full compliance pipeline (Phases 1-2-3)",
-    response_description="Combined audit report, risk assessment, and patched code.",
+    summary="Full compliance pipeline — Phases 1, 2, and 3",
 )
 async def full_audit(
     request: Request,
     body: Annotated[AuditRequest, Body(...)],
 ) -> FullPipelineResponse:
-    """
-    Execute all three pipeline phases sequentially:
+    req_id = request.state.request_id
+    t0     = time.perf_counter()
 
-    1. **Phase 1 — Auditor** (Llama 3.3 70B): Detects GDPR/DPDPA violations.
-    2. **Phase 2 — Judge** (GPT-4o): Calculates risk score and predicts fines.
-    3. **Phase 3 — Architect** (DeepSeek-Coder-V2): Generates compliant patched code.
-    """
-    req_id: str = request.state.request_id
-    t0 = time.perf_counter()
-
-    logger.info("Full pipeline start [req=%s] lang=%s regs=%s",
-                req_id, body.language, body.regulations)
+    logger.info("Full pipeline start [req=%s] lang=%s regs=%s", req_id, body.language, body.regulations)
 
     try:
-        audit: AuditReport = await run_audit(
+        audit = await run_audit(
             sanitized_code=body.sanitized_code,
             language=body.language,
             regulations=body.regulations,
         )
-        risk: RiskAssessment = await run_risk(
+        risk = await run_risk(
             violations=audit.violations,
             sanitized_code=body.sanitized_code,
         )
-        patch: PatchResult = await run_patch(
+        patch = await run_patch(
             sanitized_code=body.sanitized_code,
             violations=audit.violations,
             language=body.language,
         )
-    except Exception as exc:
+    except RuntimeError as exc:
         logger.error("Pipeline error [req=%s]: %s", req_id, exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Pipeline agent error: {exc}",
-        ) from exc
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    elapsed_ms = (time.perf_counter() - t0) * 1_000
-    logger.info("Full pipeline complete [req=%s] in %.2f ms", req_id, elapsed_ms)
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    logger.info("Full pipeline complete [req=%s] in %.0fms", req_id, elapsed_ms)
 
     return FullPipelineResponse(
         request_id=req_id,
@@ -314,86 +301,61 @@ async def full_audit(
     )
 
 
-@app.post(
-    "/api/v1/audit/report",
-    response_model=AuditReport,
-    tags=["Pipeline"],
-    summary="Phase 1 — Legal Auditor (Llama 3.3 70B)",
-)
+@app.post("/api/v1/audit/report", response_model=AuditReport, tags=["Pipeline"])
 async def audit_report_only(
     request: Request,
     body: Annotated[AuditRequest, Body(...)],
 ) -> AuditReport:
-    """Run only Phase 1: legal violation detection."""
+    """Phase 1 only — legal violation detection."""
     try:
         return await run_audit(
             sanitized_code=body.sanitized_code,
             language=body.language,
             regulations=body.regulations,
         )
-    except Exception as exc:
+    except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-@app.post(
-    "/api/v1/audit/risk",
-    response_model=RiskAssessment,
-    tags=["Pipeline"],
-    summary="Phase 2 — Risk Judge (GPT-4o)",
-)
-async def risk_assessment_only(
+@app.post("/api/v1/audit/risk", response_model=FullPipelineResponse, tags=["Pipeline"])
+async def risk_only(
     request: Request,
     body: Annotated[AuditRequest, Body(...)],
-) -> RiskAssessment:
-    """Run only Phase 2: risk scoring and fine prediction."""
+) -> FullPipelineResponse:
+    """Phases 1+2 — violations and risk scoring."""
+    req_id = request.state.request_id
+    t0     = time.perf_counter()
     try:
-        audit = await run_audit(
-            sanitized_code=body.sanitized_code,
-            language=body.language,
-            regulations=body.regulations,
-        )
-        return await run_risk(
-            violations=audit.violations,
-            sanitized_code=body.sanitized_code,
-        )
-    except Exception as exc:
+        audit = await run_audit(body.sanitized_code, body.language, body.regulations)
+        risk  = await run_risk(audit.violations, body.sanitized_code)
+        patch = PatchResult()
+    except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return FullPipelineResponse(
+        request_id=req_id, elapsed_ms=round((time.perf_counter()-t0)*1000, 2),
+        audit_report=audit, risk_assessment=risk, patch_result=patch,
+    )
 
 
-@app.post(
-    "/api/v1/audit/patch",
-    response_model=PatchResult,
-    tags=["Pipeline"],
-    summary="Phase 3 — Code Architect (DeepSeek-Coder-V2)",
-)
+@app.post("/api/v1/audit/patch", response_model=FullPipelineResponse, tags=["Pipeline"])
 async def patch_only(
     request: Request,
     body: Annotated[AuditRequest, Body(...)],
-) -> PatchResult:
-    """Run Phases 1 + 3: audit then generate a compliant code patch."""
+) -> FullPipelineResponse:
+    """Phases 1+3 — violations and patched code."""
+    req_id = request.state.request_id
+    t0     = time.perf_counter()
     try:
-        audit = await run_audit(
-            sanitized_code=body.sanitized_code,
-            language=body.language,
-            regulations=body.regulations,
-        )
-        return await run_patch(
-            sanitized_code=body.sanitized_code,
-            violations=audit.violations,
-            language=body.language,
-        )
-    except Exception as exc:
+        audit = await run_audit(body.sanitized_code, body.language, body.regulations)
+        patch = await run_patch(body.sanitized_code, audit.violations, body.language)
+        risk  = RiskAssessment()
+    except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-# ---------------------------------------------------------------------------
-# Development entry-point
-# ---------------------------------------------------------------------------
-if __name__ == "__main__":
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        log_level="info",
+    return FullPipelineResponse(
+        request_id=req_id, elapsed_ms=round((time.perf_counter()-t0)*1000, 2),
+        audit_report=audit, risk_assessment=risk, patch_result=patch,
     )
+
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, log_level="info")

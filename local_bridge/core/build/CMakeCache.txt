@@ -17,11 +17,13 @@
 //No help, variable specified on the command line.
 CMAKE_BUILD_TYPE:UNINITIALIZED=Release
 
+//Semicolon separated list of supported configuration types, only
+// supports Debug, Release, MinSizeRel, and RelWithDebInfo, anything
+// else will be ignored.
+CMAKE_CONFIGURATION_TYPES:STRING=Debug;Release;MinSizeRel;RelWithDebInfo
+
 //Value Computed by CMake.
 CMAKE_FIND_PACKAGE_REDIRECTS_DIR:STATIC=E:/oxbuild-compliance-agent/local_bridge/core/build/CMakeFiles/pkgRedirects
-
-//Program used to build from makefiles.
-CMAKE_MAKE_PROGRAM:STRING=nmake
 
 //Value Computed by CMake
 CMAKE_PROJECT_DESCRIPTION:STATIC=Oxbuild Compliance Agent — Phase 0 PII Scanner
@@ -46,6 +48,9 @@ CMAKE_PROJECT_VERSION_PATCH:STATIC=0
 
 //Value Computed by CMake
 CMAKE_PROJECT_VERSION_TWEAK:STATIC=
+
+//No help, variable specified on the command line.
+Python3_EXECUTABLE:UNINITIALIZED=C:\Users\Girish\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\python.exe
 
 //Value Computed by CMake
 oxscanner_BINARY_DIR:STATIC=E:/oxbuild-compliance-agent/local_bridge/core/build
@@ -78,18 +83,16 @@ CMAKE_CTEST_COMMAND:INTERNAL=E:/mingw64/bin/ctest.exe
 //Name of external makefile project generator.
 CMAKE_EXTRA_GENERATOR:INTERNAL=
 //Name of generator.
-CMAKE_GENERATOR:INTERNAL=NMake Makefiles
+CMAKE_GENERATOR:INTERNAL=Visual Studio 17 2022
 //Generator instance identifier.
 CMAKE_GENERATOR_INSTANCE:INTERNAL=
 //Name of generator platform.
-CMAKE_GENERATOR_PLATFORM:INTERNAL=
+CMAKE_GENERATOR_PLATFORM:INTERNAL=x64
 //Name of generator toolset.
 CMAKE_GENERATOR_TOOLSET:INTERNAL=
 //Source directory with the top level CMakeLists.txt file for this
 // project
 CMAKE_HOME_DIRECTORY:INTERNAL=E:/oxbuild-compliance-agent/local_bridge/core
-//ADVANCED property for variable: CMAKE_MAKE_PROGRAM
-CMAKE_MAKE_PROGRAM-ADVANCED:INTERNAL=1
 //number of local generators
 CMAKE_NUMBER_OF_MAKEFILES:INTERNAL=1
 //Platform information initialized
