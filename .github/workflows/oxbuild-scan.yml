@@ -1,0 +1,130 @@
+# .github/workflows/oxbuild-scan.yml
+# ====================================
+# Oxbuild CI/CD Integration
+# Runs a compliance audit on every pull request and push to main.
+# Fails the build if any CRITICAL violations are found.
+#
+# SETUP (one-time):
+#   1. Go to your repo → Settings → Secrets and Variables → Actions
+#   2. Add a secret named: OXLO_AUDIT_KEY
+#      Value: your Groq API key from https://console.groq.com
+#   3. That's it. The workflow will run on every PR automatically.
+#
+# CUSTOMISE:
+#   - Change SCAN_PATH to point at your source code directory
+#   - Adjust REGULATIONS for your required frameworks
+#   - Change FAIL_ON_SEVERITY to HIGH if you want stricter gates
+#   - Set OXBUILD_API_URL if you host your own backend
+
+name: Oxbuild Compliance Scan
+
+on:
+  push:
+    branches: [main, master, develop]
+    paths:
+      - "**.py"
+      - "**.js"
+      - "**.ts"
+      - "**.jsx"
+      - "**.tsx"
+      - "**.java"
+      - "**.go"
+  pull_request:
+    branches: [main, master, develop]
+    paths:
+      - "**.py"
+      - "**.js"
+      - "**.ts"
+      - "**.jsx"
+      - "**.tsx"
+      - "**.java"
+      - "**.go"
+
+jobs:
+  compliance-scan:
+    name: Compliance Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so we can diff against base branch
+
+      # ── 2. Set up Python ─────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # ── 3. Install scanner dependencies ──────────────────────────────────
+      - name: Install oxbuild scanner
+        run: |
+          pip install httpx pydantic pydantic-settings python-dotenv
+
+      # ── 4. Collect changed files ──────────────────────────────────────────
+      - name: Collect files to scan
+        id: changed
+        env:
+          BASE_BRANCH: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          # On PR: scan only changed files
+          # On push to main: scan all source files up to 20 files
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            FILES=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD \
+              | grep -E '\.(py|js|ts|jsx|tsx|java|go)$' \
+              | head -20 \
+              | tr '\n' ' ')
+          else
+            FILES=$(find . -type f \
+              -name "*.py" -o -name "*.js" -o -name "*.ts" \
+              | grep -v node_modules \
+              | grep -v ".venv" \
+              | grep -v "__pycache__" \
+              | grep -v ".git" \
+              | head -20 \
+              | tr '\n' ' ')
+          fi
+          echo "files=${FILES}" >> $GITHUB_OUTPUT
+          echo "Scanning: ${FILES}"
+
+      # ── 5. Run the audit ──────────────────────────────────────────────────
+      - name: Run Oxbuild compliance audit
+        id: audit
+        env:
+          AUDITOR_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          JUDGE_API_KEY:   ${{ secrets.GROQ_API_KEY }}
+          ARCHITECT_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          python .github/scripts/oxbuild_ci.py \
+            --files ${{ steps.changed.outputs.files }} \
+            --regulations GDPR DPDPA \
+            --fail-on CRITICAL \
+            --output-json /tmp/oxbuild-report.json \
+            --output-summary /tmp/oxbuild-summary.md
+
+      # ── 6. Post PR comment ────────────────────────────────────────────────
+      - name: Post audit summary to PR
+        if: github.event_name == 'pull_request' && always()
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          recreate: true
+          path: /tmp/oxbuild-summary.md
+
+      # ── 7. Upload report artifact ─────────────────────────────────────────
+      - name: Upload compliance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oxbuild-compliance-report
+          path: /tmp/oxbuild-report.json
+          retention-days: 30
+
+      # ── 8. Annotate PR with violations ────────────────────────────────────
+      - name: Annotate violations
+        if: always()
+        run: |
+          python .github/scripts/oxbuild_annotate.py /tmp/oxbuild-report.json

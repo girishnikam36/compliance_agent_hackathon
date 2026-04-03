@@ -1,16 +1,19 @@
 """
-cloud_orchestrator/main.py
-===========================
-FastAPI application — Oxbuild Compliance Agent cloud orchestrator.
+cloud_orchestrator/main.py  v4.0
+===================================
+FastAPI cloud orchestrator — Oxbuild Compliance Agent.
 
 Endpoints
 ---------
-POST /api/v1/audit          Full pipeline (Phases 1-2-3)
-POST /api/v1/audit/report   Phase 1 only — legal violations
-POST /api/v1/audit/risk     Phases 1+2 — violations + risk score
-POST /api/v1/audit/patch    Phases 1+3 — violations + patched code
-GET  /api/v1/health         Health check
-GET  /api/v1/models         Currently configured provider/model info
+POST /api/v1/scan               Phase 0 — PII sanitization (C++ or Python fallback)
+POST /api/v1/audit              Full pipeline  (Phases 1-2-3)
+POST /api/v1/audit/report       Phase 1 only
+POST /api/v1/audit/risk         Phases 1+2
+POST /api/v1/audit/patch        Phases 1+3
+POST /api/v1/audit/project      Multi-file / ZIP scan (returns array of FullPipelineResponse)
+POST /api/v1/export/pdf         Download PDF report (ReportLab — includes diff + corrected code)
+GET  /api/v1/health
+GET  /api/v1/models
 
 Run
 ---
@@ -20,16 +23,22 @@ Run
 
 from __future__ import annotations
 
+import hashlib
+import io
 import logging
+import re
+import sys
 import time
 import uuid
+import zipfile
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated, Any, AsyncGenerator
 
 import uvicorn
-from fastapi import Body, FastAPI, HTTPException, Request, status
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from agents.pipeline import (
@@ -46,42 +55,114 @@ logging.basicConfig(
     format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%S",
 )
-logger: logging.Logger = logging.getLogger("oxbuild.api")
+logger = logging.getLogger("oxbuild.api")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Lifespan — startup / shutdown
+# Phase 0 — PII scanner (C++ preferred, Python regex fallback)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PY_PII: dict[str, str] = {
+    "EMAIL":   r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}",
+    "IPV4":    r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b",
+    "API_KEY": (
+        r"\b(?:sk-[A-Za-z0-9]{32,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z\-_]{35}"
+        r"|ghp_[A-Za-z0-9]{36,}|sk_live_[A-Za-z0-9]{24,}|whsec_[A-Za-z0-9]{20,})\b"
+    ),
+    "PHONE":   r"\b(?:\+?1[\s\-\.]?)?\(?\d{3}\)?[\s\-\.]?\d{3}[\s\-\.]?\d{4}\b",
+}
+
+
+def _py_scan(code: str) -> tuple[str, dict[str, str]]:
+    result = code
+    rmap: dict[str, str] = {}
+    for label, pattern in _PY_PII.items():
+        def _repl(m: re.Match, lbl: str = label) -> str:
+            orig  = m.group(0)
+            for tok, val in rmap.items():
+                if val == orig:
+                    return tok
+            h8    = hashlib.sha256(orig.encode()).hexdigest()[:8].upper()
+            token = f"[PII_{lbl}_{h8}]"
+            rmap[token] = orig
+            return token
+        result = re.sub(pattern, _repl, result)
+    return result, rmap
+
+
+def _scan(code: str) -> tuple[str, dict, bool]:
+    project_root = Path(__file__).parents[1]
+    scanner_dir  = project_root / "local_bridge" / "core"
+    if str(scanner_dir) not in sys.path:
+        sys.path.insert(0, str(scanner_dir))
+    try:
+        import _oxscanner  # type: ignore[import]
+        san, rmap = _oxscanner.scan_code(code)
+        return san, dict(rmap), True
+    except ImportError:
+        san, rmap = _py_scan(code)
+        return san, rmap, False
+    except Exception as exc:
+        logger.warning("C++ scanner error: %s — Python fallback", exc)
+        san, rmap = _py_scan(code)
+        return san, rmap, False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Language detection from file extension
+# ─────────────────────────────────────────────────────────────────────────────
+
+_EXT_LANG: dict[str, str] = {
+    ".py": "python", ".pyw": "python",
+    ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript", ".cjs": "javascript",
+    ".ts": "typescript", ".tsx": "typescript",
+    ".java": "java",
+    ".go": "go",
+    ".rs": "rust",
+    ".rb": "ruby",
+    ".php": "php",
+    ".cs": "csharp",
+    ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp",
+    ".swift": "swift",
+    ".kt": "kotlin", ".kts": "kotlin",
+}
+
+def _detect_lang(filename: str) -> str:
+    return _EXT_LANG.get(Path(filename).suffix.lower(), "python")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Lifespan
 # ─────────────────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    logger.info("Oxbuild Compliance Agent — starting up")
+    logger.info("Oxbuild v4.0 — starting up")
+    _, _, cpp = _scan("test@example.com")
+    logger.info("Phase 0 scanner: %s", "C++ _oxscanner" if cpp else "Python regex fallback")
     try:
-        from cloud_orchestrator.core.config import settings
-        logger.info("Provider config loaded:")
-        logger.info("  Auditor   → %s (%s)", settings.auditor_model, settings.auditor_base_url)
-        logger.info("  Judge     → %s (%s)", settings.judge_model, settings.judge_base_url)
-        logger.info("  Architect → %s (%s)", settings.architect_model, settings.architect_base_url)
-        logger.info("  Mock mode → %s", settings.enable_mock_llm)
+        try:
+            from cloud_orchestrator.core.config import settings
+        except ImportError:
+            from core.config import settings  # type: ignore[no-redef]
+        logger.info("Auditor   → %s @ %s", settings.auditor_model,   settings.auditor_base_url)
+        logger.info("Judge     → %s @ %s", settings.judge_model,     settings.judge_base_url)
+        logger.info("Architect → %s @ %s", settings.architect_model, settings.architect_base_url)
+        logger.info("Mock LLM  → %s", settings.enable_mock_llm)
     except Exception as e:
-        logger.warning("Could not load config for startup log: %s", e)
+        logger.warning("Config log skipped: %s", e)
     yield
-    logger.info("Oxbuild Compliance Agent — shutting down")
+    logger.info("Oxbuild — shutdown")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FastAPI app
+# App
 # ─────────────────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="Oxbuild Compliance Agent",
-    version="2.0.0",
-    description=(
-        "Local-first compliance auditing pipeline. "
-        "Phase 1: Groq/Llama 3.3 70B — violation detection. "
-        "Phase 2: OpenRouter/DeepSeek R1 — risk scoring. "
-        "Phase 3: DeepSeek — compliant code patching."
-    ),
+    version="4.0.0",
+    description="Local-first compliance auditing pipeline with PDF export and multi-file scan.",
     lifespan=lifespan,
     docs_url="/api/docs",
     redoc_url="/api/redoc",
@@ -91,10 +172,8 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://localhost:4173",
-        "http://localhost:8000",
+        "http://localhost:3000", "http://localhost:5173",
+        "http://localhost:4173", "http://localhost:8000",
         "https://app.oxbuild.ai",
     ],
     allow_credentials=True,
@@ -107,26 +186,25 @@ app.add_middleware(
 # Request / Response models
 # ─────────────────────────────────────────────────────────────────────────────
 
+class ScanRequest(BaseModel):
+    code:     str = Field(..., min_length=1, max_length=500_000)
+    language: str = Field(default="unknown")
+
+
+class ScanResponse(BaseModel):
+    sanitized_code: str
+    redaction_map:  dict[str, str]
+    pii_count:      int
+    categories:     list[str]
+    elapsed_ms:     float
+    scanner_used:   str
+
+
 class AuditRequest(BaseModel):
-    sanitized_code: str = Field(
-        ...,
-        min_length=1,
-        max_length=500_000,
-        description="Source code with PII already redacted by the local C++ scanner.",
-        examples=["def get_user(id):\n    return db.query(User).all()"],
-    )
-    language: str = Field(
-        default="python",
-        description="Source language — python, javascript, typescript, java, go, etc.",
-    )
-    regulations: list[str] = Field(
-        default_factory=lambda: ["GDPR", "DPDPA"],
-        description="Regulatory frameworks to audit against.",
-    )
-    metadata: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Optional caller metadata (repo, file path, commit SHA, etc.).",
-    )
+    sanitized_code: str = Field(..., min_length=1, max_length=500_000)
+    language:       str = Field(default="python")
+    regulations:    list[str] = Field(default_factory=lambda: ["GDPR", "DPDPA"])
+    metadata:       dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("language")
     @classmethod
@@ -136,12 +214,10 @@ class AuditRequest(BaseModel):
     @field_validator("regulations")
     @classmethod
     def validate_regulations(cls, v: list[str]) -> list[str]:
-        allowed = {"GDPR", "DPDPA", "CCPA", "HIPAA", "SOC2", "PCI-DSS", "ISO27001"}
-        for reg in v:
-            if reg.upper() not in allowed:
-                raise ValueError(
-                    f"Unknown regulation: {reg!r}. Allowed: {sorted(allowed)}"
-                )
+        allowed = {"GDPR","DPDPA","CCPA","HIPAA","SOC2","PCI-DSS","ISO27001"}
+        for r in v:
+            if r.upper() not in allowed:
+                raise ValueError(f"Unknown regulation: {r!r}. Allowed: {sorted(allowed)}")
         return [r.upper() for r in v]
 
 
@@ -151,12 +227,23 @@ class FullPipelineResponse(BaseModel):
     audit_report:    AuditReport
     risk_assessment: RiskAssessment
     patch_result:    PatchResult
+    file_name:       str | None = None    # for multi-file scan results
+
+
+class ProjectScanResponse(BaseModel):
+    total_files:      int
+    scanned_files:    int
+    total_violations: int
+    total_critical:   int
+    files:            list[FullPipelineResponse]
+    elapsed_ms:       float
 
 
 class HealthResponse(BaseModel):
     status:   str   = "ok"
-    version:  str   = "2.0.0"
+    version:  str   = "4.0.0"
     uptime_s: float = 0.0
+    scanner:  str   = "unknown"
 
 
 class ModelInfo(BaseModel):
@@ -168,151 +255,156 @@ class ModelInfo(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Middleware — request ID + timing
+# Middleware
 # ─────────────────────────────────────────────────────────────────────────────
 
-_START_TIME: float = time.monotonic()
+_START: float = time.monotonic()
 
 
 @app.middleware("http")
-async def attach_request_id(request: Request, call_next):
-    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
-    request.state.request_id = request_id
-    t0 = time.perf_counter()
+async def _request_id(request: Request, call_next):
+    rid      = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+    request.state.request_id = rid
+    t0       = time.perf_counter()
     response = await call_next(request)
     elapsed  = (time.perf_counter() - t0) * 1_000
-    response.headers["X-Request-ID"]    = request_id
-    response.headers["X-Response-Time"] = f"{elapsed:.2f}ms"
-    logger.info(
-        "%s %s → %d [%.2fms] [req=%s]",
-        request.method, request.url.path,
-        response.status_code, elapsed, request_id,
-    )
+    response.headers["X-Request-ID"]    = rid
+    response.headers["X-Response-Time"] = f"{elapsed:.0f}ms"
+    logger.info("%s %s → %d [%.0fms] [%s]",
+                request.method, request.url.path, response.status_code, elapsed, rid)
     return response
 
 
 @app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    req_id = getattr(request.state, "request_id", "unknown")
-    logger.exception("Unhandled error [req=%s]: %s", req_id, exc)
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": str(exc), "request_id": req_id},
+async def _global_exc(request: Request, exc: Exception) -> JSONResponse:
+    rid = getattr(request.state, "request_id", "unknown")
+    logger.exception("Unhandled error [%s]: %s", rid, exc)
+    return JSONResponse(status_code=500, content={"detail": str(exc), "request_id": rid})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper — run full pipeline for one file
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _run_pipeline(
+    code:        str,
+    language:    str,
+    regulations: list[str],
+    req_id:      str,
+    file_name:   str | None = None,
+) -> FullPipelineResponse:
+    t0 = time.perf_counter()
+    try:
+        audit = await run_audit(code, language, regulations)
+        risk  = await run_risk(audit.violations, code)
+        patch = await run_patch(code, audit.violations, language)
+    except RuntimeError as exc:
+        logger.error("Pipeline error [%s]: %s", req_id, exc)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    elapsed = (time.perf_counter() - t0) * 1000
+    return FullPipelineResponse(
+        request_id=req_id, elapsed_ms=round(elapsed, 2),
+        audit_report=audit, risk_assessment=risk, patch_result=patch,
+        file_name=file_name,
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Routes — health & meta
+# Routes — meta
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/v1/health", response_model=HealthResponse, tags=["Meta"])
 async def health_check() -> HealthResponse:
+    _, _, cpp = _scan("x@y.com")
     return HealthResponse(
-        status="ok",
-        version="2.0.0",
-        uptime_s=round(time.monotonic() - _START_TIME, 2),
+        status="ok", version="4.0.0",
+        uptime_s=round(time.monotonic() - _START, 2),
+        scanner="cpp" if cpp else "python_fallback",
     )
 
 
 @app.get("/api/v1/models", response_model=list[ModelInfo], tags=["Meta"])
 async def list_models() -> list[ModelInfo]:
-    """Return the currently configured provider and model for each phase."""
+    import os
     try:
-        from cloud_orchestrator.core.config import settings
+        try:
+            from cloud_orchestrator.core.config import settings
+        except ImportError:
+            from core.config import settings  # type: ignore[no-redef]
         return [
-            ModelInfo(
-                phase=1, name=settings.auditor_model,
-                role="Legal Auditor — GDPR/DPDPA violation detection",
-                provider="Groq (free tier)" if "groq" in settings.auditor_base_url else settings.auditor_base_url,
-                base_url=settings.auditor_base_url,
-            ),
-            ModelInfo(
-                phase=2, name=settings.judge_model,
-                role="Risk Judge — Σ(Severity×Likelihood) scoring + fine prediction",
-                provider="OpenRouter (free)" if "openrouter" in settings.judge_base_url else settings.judge_base_url,
-                base_url=settings.judge_base_url,
-            ),
-            ModelInfo(
-                phase=3, name=settings.architect_model,
-                role="Code Architect — Compliant patch generation",
-                provider="DeepSeek (5M free tokens)" if "deepseek.com" in settings.architect_base_url else settings.architect_base_url,
-                base_url=settings.architect_base_url,
-            ),
+            ModelInfo(phase=1, name=settings.auditor_model,
+                      role="Legal Auditor — violation detection",
+                      provider="Groq" if "groq" in settings.auditor_base_url else settings.auditor_base_url,
+                      base_url=settings.auditor_base_url),
+            ModelInfo(phase=2, name=settings.judge_model,
+                      role="Risk Judge — Σ(S×L) scoring",
+                      provider="Groq" if "groq" in settings.judge_base_url else settings.judge_base_url,
+                      base_url=settings.judge_base_url),
+            ModelInfo(phase=3, name=settings.architect_model,
+                      role="Code Architect — compliance patching",
+                      provider="Groq" if "groq" in settings.architect_base_url else settings.architect_base_url,
+                      base_url=settings.architect_base_url),
         ]
     except Exception:
-        import os
         return [
             ModelInfo(phase=1, name=os.environ.get("AUDITOR_MODEL","llama-3.3-70b-versatile"),
-                      role="Legal Auditor", provider="Groq", base_url=os.environ.get("AUDITOR_BASE_URL","")),
-            ModelInfo(phase=2, name=os.environ.get("JUDGE_MODEL","deepseek/deepseek-r1-0528:free"),
-                      role="Risk Judge", provider="OpenRouter", base_url=os.environ.get("JUDGE_BASE_URL","")),
-            ModelInfo(phase=3, name=os.environ.get("ARCHITECT_MODEL","deepseek-chat"),
-                      role="Code Architect", provider="DeepSeek", base_url=os.environ.get("ARCHITECT_BASE_URL","")),
+                      role="Legal Auditor", provider="Groq",
+                      base_url=os.environ.get("AUDITOR_BASE_URL","")),
+            ModelInfo(phase=2, name=os.environ.get("JUDGE_MODEL","deepseek-r1-distill-llama-70b"),
+                      role="Risk Judge", provider="Groq",
+                      base_url=os.environ.get("JUDGE_BASE_URL","")),
+            ModelInfo(phase=3, name=os.environ.get("ARCHITECT_MODEL","llama-3.3-70b-versatile"),
+                      role="Code Architect", provider="Groq",
+                      base_url=os.environ.get("ARCHITECT_BASE_URL","")),
         ]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Routes — pipeline
+# Routes — Phase 0 Scanner
 # ─────────────────────────────────────────────────────────────────────────────
 
-@app.post(
-    "/api/v1/audit",
-    response_model=FullPipelineResponse,
-    tags=["Pipeline"],
-    summary="Full compliance pipeline — Phases 1, 2, and 3",
-)
+@app.post("/api/v1/scan", response_model=ScanResponse, tags=["Pipeline"],
+          summary="Phase 0 — PII Sanitization")
+async def scan_code(body: ScanRequest) -> ScanResponse:
+    t0 = time.perf_counter()
+    sanitized, rmap, used_cpp = _scan(body.code)
+    elapsed    = (time.perf_counter() - t0) * 1000
+    categories = sorted({
+        tok.split("_")[1]
+        for tok in rmap if tok.startswith("[PII_")
+    })
+    logger.info("Scan | scanner=%s pii=%d cats=%s %.1fms",
+                "cpp" if used_cpp else "python", len(rmap), categories, elapsed)
+    return ScanResponse(
+        sanitized_code=sanitized, redaction_map=rmap,
+        pii_count=len(rmap), categories=categories,
+        elapsed_ms=round(elapsed, 2),
+        scanner_used="cpp" if used_cpp else "python_fallback",
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Routes — Audit pipeline
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/audit", response_model=FullPipelineResponse, tags=["Pipeline"],
+          summary="Full compliance pipeline — Phases 1, 2, 3")
 async def full_audit(
     request: Request,
     body: Annotated[AuditRequest, Body(...)],
 ) -> FullPipelineResponse:
-    req_id = request.state.request_id
-    t0     = time.perf_counter()
-
-    logger.info("Full pipeline start [req=%s] lang=%s regs=%s", req_id, body.language, body.regulations)
-
-    try:
-        audit = await run_audit(
-            sanitized_code=body.sanitized_code,
-            language=body.language,
-            regulations=body.regulations,
-        )
-        risk = await run_risk(
-            violations=audit.violations,
-            sanitized_code=body.sanitized_code,
-        )
-        patch = await run_patch(
-            sanitized_code=body.sanitized_code,
-            violations=audit.violations,
-            language=body.language,
-        )
-    except RuntimeError as exc:
-        logger.error("Pipeline error [req=%s]: %s", req_id, exc)
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    elapsed_ms = (time.perf_counter() - t0) * 1000
-    logger.info("Full pipeline complete [req=%s] in %.0fms", req_id, elapsed_ms)
-
-    return FullPipelineResponse(
-        request_id=req_id,
-        elapsed_ms=round(elapsed_ms, 2),
-        audit_report=audit,
-        risk_assessment=risk,
-        patch_result=patch,
+    logger.info("Pipeline start [%s] lang=%s regs=%s",
+                request.state.request_id, body.language, body.regulations)
+    return await _run_pipeline(
+        body.sanitized_code, body.language,
+        body.regulations, request.state.request_id,
     )
 
 
 @app.post("/api/v1/audit/report", response_model=AuditReport, tags=["Pipeline"])
-async def audit_report_only(
-    request: Request,
-    body: Annotated[AuditRequest, Body(...)],
-) -> AuditReport:
-    """Phase 1 only — legal violation detection."""
+async def audit_report_only(body: Annotated[AuditRequest, Body(...)]) -> AuditReport:
     try:
-        return await run_audit(
-            sanitized_code=body.sanitized_code,
-            language=body.language,
-            regulations=body.regulations,
-        )
+        return await run_audit(body.sanitized_code, body.language, body.regulations)
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -322,18 +414,16 @@ async def risk_only(
     request: Request,
     body: Annotated[AuditRequest, Body(...)],
 ) -> FullPipelineResponse:
-    """Phases 1+2 — violations and risk scoring."""
-    req_id = request.state.request_id
-    t0     = time.perf_counter()
+    rid = request.state.request_id
+    t0  = time.perf_counter()
     try:
         audit = await run_audit(body.sanitized_code, body.language, body.regulations)
         risk  = await run_risk(audit.violations, body.sanitized_code)
-        patch = PatchResult()
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return FullPipelineResponse(
-        request_id=req_id, elapsed_ms=round((time.perf_counter()-t0)*1000, 2),
-        audit_report=audit, risk_assessment=risk, patch_result=patch,
+        request_id=rid, elapsed_ms=round((time.perf_counter()-t0)*1000, 2),
+        audit_report=audit, risk_assessment=risk, patch_result=PatchResult(),
     )
 
 
@@ -342,18 +432,168 @@ async def patch_only(
     request: Request,
     body: Annotated[AuditRequest, Body(...)],
 ) -> FullPipelineResponse:
-    """Phases 1+3 — violations and patched code."""
-    req_id = request.state.request_id
-    t0     = time.perf_counter()
+    rid = request.state.request_id
+    t0  = time.perf_counter()
     try:
         audit = await run_audit(body.sanitized_code, body.language, body.regulations)
         patch = await run_patch(body.sanitized_code, audit.violations, body.language)
-        risk  = RiskAssessment()
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return FullPipelineResponse(
-        request_id=req_id, elapsed_ms=round((time.perf_counter()-t0)*1000, 2),
-        audit_report=audit, risk_assessment=risk, patch_result=patch,
+        request_id=rid, elapsed_ms=round((time.perf_counter()-t0)*1000, 2),
+        audit_report=audit, risk_assessment=RiskAssessment(), patch_result=patch,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Routes — Multi-file / ZIP project scan
+# ─────────────────────────────────────────────────────────────────────────────
+
+MAX_PROJECT_FILES = 20   # safety cap
+MAX_FILE_SIZE     = 200_000   # 200 KB per file
+
+
+@app.post("/api/v1/audit/project", response_model=ProjectScanResponse, tags=["Pipeline"],
+          summary="Multi-file project scan — upload individual files or a .zip")
+async def project_scan(
+    request:     Request,
+    files:       list[UploadFile] = File(..., description="Source files or a single .zip"),
+    regulations: str              = Form(default="GDPR,DPDPA",
+                                         description="Comma-separated regulation names"),
+    language:    str              = Form(default="auto",
+                                         description="Language override; 'auto' detects from extension"),
+) -> ProjectScanResponse:
+    """
+    Accept multiple source files OR a single .zip archive.
+    Scans each file through the full pipeline.
+    Returns an aggregate result with per-file breakdowns.
+    """
+    regs_list = [r.strip().upper() for r in regulations.split(",") if r.strip()]
+    if not regs_list:
+        regs_list = ["GDPR", "DPDPA"]
+
+    # Expand zip if provided
+    file_entries: list[tuple[str, str]] = []   # (filename, content)
+
+    for upload in files:
+        name    = upload.filename or "unknown"
+        content = await upload.read()
+
+        if len(content) > 10 * 1024 * 1024:   # 10 MB zip cap
+            raise HTTPException(400, f"File {name} exceeds 10 MB limit")
+
+        if name.lower().endswith(".zip"):
+            try:
+                with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                    for zi in zf.infolist():
+                        if zi.is_dir():
+                            continue
+                        fn  = zi.filename
+                        ext = Path(fn).suffix.lower()
+                        if ext not in _EXT_LANG:
+                            continue
+                        if zi.file_size > MAX_FILE_SIZE:
+                            logger.warning("Skipping oversized zip entry: %s (%d bytes)", fn, zi.file_size)
+                            continue
+                        fc = zf.read(zi).decode("utf-8", errors="replace")
+                        file_entries.append((fn, fc))
+            except zipfile.BadZipFile:
+                raise HTTPException(400, f"{name} is not a valid zip file")
+        else:
+            decoded = content.decode("utf-8", errors="replace")
+            file_entries.append((name, decoded))
+
+    if not file_entries:
+        raise HTTPException(400, "No valid source files found in the upload")
+
+    # Cap total files
+    file_entries = file_entries[:MAX_PROJECT_FILES]
+
+    t_project = time.perf_counter()
+    results: list[FullPipelineResponse] = []
+
+    for fname, code in file_entries:
+        detected_lang = language if language != "auto" else _detect_lang(fname)
+
+        # Phase 0 — scan PII
+        sanitized, _, _ = _scan(code)
+
+        rid = f"{request.state.request_id}-{Path(fname).stem[:12]}"
+        logger.info("Project scan: %s lang=%s", fname, detected_lang)
+
+        try:
+            r = await _run_pipeline(
+                sanitized, detected_lang, regs_list, rid, file_name=fname
+            )
+            results.append(r)
+        except HTTPException as exc:
+            logger.error("Skipping %s due to pipeline error: %s", fname, exc.detail)
+
+    elapsed = (time.perf_counter() - t_project) * 1000
+
+    return ProjectScanResponse(
+        total_files=len(file_entries),
+        scanned_files=len(results),
+        total_violations=sum(r.audit_report.total_count for r in results),
+        total_critical=sum(r.audit_report.critical_count for r in results),
+        files=results,
+        elapsed_ms=round(elapsed, 2),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Routes — PDF Export
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/export/pdf", tags=["Export"],
+          summary="Generate a PDF compliance report",
+          response_class=StreamingResponse)
+async def export_pdf(
+    body: Annotated[dict, Body(...)],
+) -> StreamingResponse:
+    """
+    Accept a FullPipelineResponse JSON body and return a PDF file.
+
+    The PDF includes:
+      - Cover page (summary stats, risk gauge)
+      - Violation detail cards (colour-coded by severity)
+      - Risk score breakdown + regulatory fine predictions
+      - Corrected code (full patched file with line numbers)
+      - Split diff (side-by-side original vs patched per hunk)
+
+    Install reportlab:
+        pip install reportlab
+    """
+    try:
+        from utils.pdf_reporter import build_pdf
+    except ImportError:
+        try:
+            from cloud_orchestrator.utils.pdf_reporter import build_pdf  # type: ignore[no-redef]
+        except ImportError:
+            raise HTTPException(
+                status_code=501,
+                detail="reportlab is not installed. Run: pip install reportlab",
+            )
+
+    language  = body.get("language", "python")
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    filename  = f"oxbuild_compliance_report_{timestamp}.pdf"
+
+    try:
+        pdf_bytes = build_pdf(body, language=language)
+    except Exception as exc:
+        logger.exception("PDF generation failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}") from exc
+
+    logger.info("PDF export: %d bytes for language=%s", len(pdf_bytes), language)
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length":      str(len(pdf_bytes)),
+        },
     )
 
 
