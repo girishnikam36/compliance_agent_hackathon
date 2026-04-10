@@ -16,3 +16,4 @@ venv/
 *.o
 *.exe
 .vscode/
+.env

@@ -1,0 +1,84 @@
+MIT License with Commons Clause v1.0
+
+Copyright (c) 2025 Girish Nikam
+Author  : Girish Nikam
+GitHub  :https://github.com/girishnikam36/compliance_agent_hackathon.git
+Contact : nikamgirish38@example.com
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+COMMONS CLAUSE LICENSE CONDITION v1.0
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The Software is provided to you by the Licensor under the License,
+as defined below, subject to the following condition:
+
+Without limiting other conditions in the License, the grant of rights
+under the License will not include, and the License does not grant to
+you, the right to Sell the Software.
+
+For purposes of the foregoing, "Sell" means practicing any or all of
+the rights granted to you under the License to provide to third
+parties, for a fee or other consideration (including without limitation
+fees for hosting or consulting/support services related to the
+Software), a product or service whose value derives, entirely or
+substantially, from the functionality of the Software.
+
+Any license notice or attribution required by the License must also
+include this Commons Clause License Condition notice.
+
+  Licensor  : Girish Nikam
+  License   : MIT License (full text below)
+  Software  : Oxbuild Compliance Agent
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PLAIN-ENGLISH SUMMARY  (not a substitute for the legal text above)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ANYONE in the community MAY freely:
+  ✓  Use this software for personal, academic, or internal purposes
+  ✓  Read, study, fork, and modify the source code
+  ✓  Redistribute original or modified versions under this same license
+  ✓  Build personal or open-source tools that use this project
+  ✓  Submit pull requests and contribute improvements
+  ✓  Evaluate this project in a hackathon context (read-only, no rights granted)
+
+NO PERSON OR ORGANISATION — including hackathon organisers, sponsors,
+API providers, investors, or evaluators — may, without a separate
+written commercial licence negotiated with and signed by the original
+author:
+  ✗  Sell this software as a product or service
+  ✗  Offer this software as a hosted/managed/SaaS service
+  ✗  Build a commercial product whose core value derives from this code
+  ✗  Incorporate this into any product sold or licensed to third parties
+  ✗  Rebrand, white-label, or monetise this software in any form
+  ✗  Reference this project as their own work without attribution
+
+Participation in a hackathon — including submission evaluation, public
+showcasing, or investor presentations — does NOT constitute a grant of
+any rights beyond those listed in the "MAY" section above. The act of
+submitting to a hackathon does not create any licence, assignment, or
+transfer of intellectual property to any third party.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MIT LICENSE (base — modified by the Commons Clause above)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice, this permission notice, AND the Commons
+Clause License Condition v1.0 above shall be included in all copies or
+substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
