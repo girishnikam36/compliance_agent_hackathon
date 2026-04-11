@@ -2,6 +2,11 @@
 
 **License: MIT + Commons Clause v1.0** — Community use is free. Commercial use (SaaS, products, hosted services) requires written permission from the author. Hackathon evaluation does not grant commercial rights. See [LICENSE](./LICENSE) and [NOTICE.md](./NOTICE.md).
 
+Live Demo:Click here to view the live project:-
+https://compliance-agent-hackathon.vercel.app/
+
+
+
 ---
 
 Oxbuild scans source code for data privacy and security violations before they ship. Paste your code, upload a file, or take a screenshot of code from anywhere — and within 20 seconds you get a list of violations, a risk score, a patched version of your code, and a PDF report.
